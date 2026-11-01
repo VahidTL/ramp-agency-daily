@@ -286,11 +286,11 @@ def publish(text, src, english=False, media=None, link=""):
     save_state()  # persist right after each post so a later crash can't cause duplicates
     return True
 
-if os.environ.get("BACKFILL"):  # one-off: blog drafts for the channel's last 5 posts
-    for pid, text, _ in tg_items("ramp_agency")[-5:]:
-        text = text.split("━━━")[0].strip()
-        print("backfill", pid, len(text))
-        if text: blog_draft(text, "@ramp_agency", "")
+if os.environ.get("BACKFILL"):  # one-off: blog drafts for the source's last 5 items (already in the channel)
+    for name, url in RSS.items():
+        for key, text, _ in reversed(rss_items(url)[:5]):
+            print("backfill", key[:80])
+            blog_draft(text, name, key)
     raise SystemExit
 
 # --- Telegram channels (numeric last-id)
