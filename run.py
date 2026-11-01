@@ -1,0 +1,286 @@
+import os, io, re, time, uuid, html, json, urllib.request, urllib.parse, urllib.error
+
+DRY = os.environ.get("DRY_RUN") == "1"
+TG = os.environ.get("TG_TOKEN", "")
+KEY = os.environ["GEMINI_API_KEY"]
+DST = "@ramp_agency"
+MAX_PER_RUN = 6
+# free-tier quotas are per model, so fall through to the next one when a model's daily quota is gone
+MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
+dead_models = set()
+
+TG_CHANNELS = []
+RSS = {
+    "sej-ppc": "https://www.searchenginejournal.com/category/paid-media/pay-per-click/feed/",
+}
+
+FOOTER = """
+
+━━━━━━━━━━━━━━
+📊 رمپ ایجنسی | تبلیغات دیجیتال و گوگل ادز
+مدیریت کمپین، ساخت سایت و سئو برای کسب‌وکارها؛ با گزارش شفاف و تمرکز روی نتیجه.
+👉 rampagency.org
+📢 @ramp_agency"""
+
+PROMPT = """تو دبیر خبر کانال «رمپ ایجنسی» (تبلیغات دیجیتال، گوگل ادز، سئو و بازاریابی آنلاین) هستی.
+
+خبرهای اخیراً منتشرشده در کانال:
+{recent}
+
+خبر جدید (منبع: {src}{lang}):
+{text}
+
+قواعد (به ترتیب):
+1. اگر خبر ربطی به تبلیغات پولی، گوگل ادز، متا ادز، سئو، جستجو، بازاریابی محتوا یا ابزارها و تغییرات پلتفرم‌های تبلیغاتی ندارد: فقط کلمه‌ی SKIP را بنویس.
+2. اگر همین خبر قبلاً در کانال منتشر شده (حتی با منبع یا لحن دیگر) و اطلاعات تازه‌ی مهمی ندارد: فقط کلمه‌ی DUP را بنویس.
+3. اگر موضوع همان خبر قبلی است ولی اطلاعات تازه و مهمی دارد: با تیتر و ساختار و کلمات کاملاً متفاوت بنویس، روی نکته‌ی تازه تأکید کن و با «🔄 تکمیل خبر» شروع کن.
+4. در غیر این صورت: خبر را به فارسی روان و حرفه‌ای با کلمات خودت بازنویس. {translate}
+
+همه‌ی واقعیت‌ها، اعداد، نام‌ها و نام ابزارها دقیق بماند و چیزی از خودت اضافه نکن. اصطلاحات تبلیغاتی رایج (مثل CTR، ROAS، Performance Max) را با نام انگلیسی یا معادل رایج بنویس. با یک ایموجی و تیتر کوتاه شروع کن. امضا، لینک و نام و آیدی کانال یا سایت منبع را حذف کن. فقط متن نهایی (یا SKIP/DUP) را بنویس."""
+
+state = json.load(open("state.json"))
+state.setdefault("seen", {})
+state.setdefault("recent", [])
+
+UA = {"User-Agent": "Mozilla/5.0"}
+
+def fetch_bytes(url, data=None, headers=None):
+    req = urllib.request.Request(url, data=data, headers={**UA, **(headers or {})})
+    return urllib.request.urlopen(req, timeout=60).read()
+
+def fetch(url, data=None, headers=None):
+    return fetch_bytes(url, data, headers).decode("utf-8", "replace")
+
+def call(url, data=None, headers=None):
+    for wait in (15, 40, 0):
+        try:
+            return fetch(url, data, headers)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or not wait: raise
+            time.sleep(wait)
+
+def clean(s):
+    s = re.sub(r"<br\s*/?>|</p>", "\n", s)
+    s = html.unescape(re.sub(r"<[^>]+>", "", s))
+    return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+def new_media():
+    return {"photos": [], "videos": [], "docs": []}
+
+def add_media(m, url):
+    url = html.unescape(url.strip())
+    if not url.startswith("http"): return
+    ext = url.split("?")[0].lower().rsplit(".", 1)[-1]
+    kind = ("photos" if ext in ("jpg", "jpeg", "png", "webp") else
+            "videos" if ext in ("mp4", "mov", "webm") else
+            "docs" if ext in ("pdf", "doc", "docx", "xls", "xlsx", "zip", "rar", "ppt", "pptx") else None)
+    if kind and url not in m[kind]: m[kind].append(url)
+
+def tg_items(ch):
+    page = fetch(f"https://t.me/s/{ch}")
+    out = []
+    for blk in page.split("tgme_widget_message_wrap")[1:]:
+        m = re.search(r'data-post="[^/]+/(\d+)"', blk)
+        t = re.search(r'tgme_widget_message_text[^>]*>(.*?)</div>', blk, re.S)
+        if not m: continue
+        media = new_media()
+        for u in re.findall(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", blk):
+            if u not in media["photos"]: media["photos"].append(html.unescape(u))
+        for u in re.findall(r'<video[^>]+src="([^"]+)"', blk):
+            if u not in media["videos"]: media["videos"].append(html.unescape(u))
+        out.append((int(m.group(1)), clean(t.group(1)) if t else "", media))
+    return out
+
+def rss_items(url):
+    x = fetch(url)
+    out = []
+    for it in re.findall(r"<item>(.*?)</item>", x, re.S):
+        g = lambda tag: (re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", it, re.S) or [None, ""])[1]
+        link = clean(g("link")) or clean(g("guid"))
+        raw = re.sub(r"<!\[CDATA\[|\]\]>", "", g("content:encoded") or g("description"))
+        text = clean(re.sub(r"<!\[CDATA\[|\]\]>", "", g("title"))) + "\n\n" + clean(raw)
+        media = new_media()
+        for u in re.findall(r'<(?:enclosure|media:content)[^>]+url="([^"]+)"', it): add_media(media, u)
+        for u in re.findall(r'<img[^>]+src="([^"]+)"', raw)[:3]: add_media(media, u)
+        for u in re.findall(r'href="([^"]+\.(?:pdf|docx?|xlsx?|zip|rar))"', raw, re.I)[:2]: add_media(media, u)
+        out.append((link, text[:3500], media))
+    return out
+
+_last_gemini = [0.0]
+def rewrite(text, src, english=False):
+    wait = 13 - (time.time() - _last_gemini[0])  # free tier: keep under ~5 requests/minute
+    if wait > 0: time.sleep(wait)
+    _last_gemini[0] = time.time()
+    recent = "\n".join(f"- {r}" for r in state["recent"][-30:]) or "(هنوز موردی نیست)"
+    prompt = PROMPT.format(recent=recent, src=src, text=text,
+                           lang="، متن انگلیسی" if english else "",
+                           translate="متن انگلیسی است؛ آن را به فارسی روان و طبیعی ترجمه و بازنویسی کن (نه ترجمه‌ی تحت‌اللفظی)." if english else "")
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+    last = None
+    for model in MODELS:
+        if model in dead_models: continue
+        try:
+            r = json.loads(fetch(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                 body, {"x-goog-api-key": KEY, "content-type": "application/json"}))
+            return r["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code in (429, 404):
+                dead_models.add(model); print(f"model {model} unavailable ({e.code}), trying next"); continue
+            if e.code in (500, 502, 503, 504):
+                print(f"model {model} overloaded ({e.code}), trying next"); continue
+            raise
+    raise last or RuntimeError("no Gemini model available")
+
+def save_state():
+    if not DRY:
+        json.dump(state, open("state.json", "w"), ensure_ascii=False)
+
+def to_html(t):
+    t = html.escape(t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t, flags=re.S)
+    t = re.sub(r"(?m)^\s*[\*\-]\s+", "▫️ ", t)
+    return t.replace("*", "")
+
+# --- images: watermark with the Ramp logo + domain
+def watermark(raw):
+    from PIL import Image, ImageDraw, ImageFont
+    im = Image.open(io.BytesIO(raw)).convert("RGBA")
+    if min(im.size) < 200: raise ValueError("image too small")
+    w, h = im.size
+    logo = Image.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "watermark.png")).convert("RGBA")
+    size = max(48, int(min(w, h) * 0.13))
+    logo = logo.resize((size, size))
+    logo.putalpha(logo.getchannel("A").point(lambda a: int(a * 0.9)))
+    font = ImageFont.load_default(size=max(14, size // 3))
+    label = "rampagency.org"
+    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    pad = max(8, size // 5)
+    tw = d.textlength(label, font=font)
+    x_logo = w - pad - size
+    y_logo = h - pad - size
+    # soft dark pill behind the label so it reads on any photo
+    d.rounded_rectangle([x_logo - tw - pad * 1.6, y_logo + size * 0.22, x_logo - pad * 0.4, y_logo + size * 0.78],
+                        radius=size // 4, fill=(11, 37, 48, 170))
+    d.text((x_logo - tw - pad, y_logo + size * 0.5), label, font=font, fill=(235, 197, 114, 255), anchor="lm")
+    im = Image.alpha_composite(im, layer)
+    im.alpha_composite(logo, (x_logo, y_logo))
+    out = io.BytesIO(); im.convert("RGB").save(out, "JPEG", quality=90)
+    return out.getvalue()
+
+def multipart(fields, files):
+    b = "----ramp" + uuid.uuid4().hex
+    parts = []
+    for k, v in fields.items():
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    for k, (fname, data) in files.items():
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="{k}"; filename="{fname}"\r\nContent-Type: image/jpeg\r\n\r\n'.encode() + data + b"\r\n")
+    parts.append(f"--{b}--\r\n".encode())
+    return b"".join(parts), {"Content-Type": f"multipart/form-data; boundary={b}"}
+
+def tg_api(method, fields, files=None):
+    url = f"https://api.telegram.org/bot{TG}/{method}"
+    if files:
+        data, hdr = multipart(fields, files)
+        return call(url, data, hdr)
+    return call(url, urllib.parse.urlencode(fields).encode())
+
+def get_photos(urls):
+    out = []
+    for u in urls[:4]:
+        try:
+            raw = fetch_bytes(u)
+            if len(raw) > 9_000_000: continue
+            out.append(watermark(raw))
+        except Exception as e:
+            print(f"photo skipped ({u[:60]}): {e}")
+    return out
+
+def send(msg, media):
+    base = {"chat_id": DST, "parse_mode": "HTML"}
+    photos = get_photos(media["photos"])
+    if DRY:
+        for i, p in enumerate(photos): open(f"out_{i}.jpg", "wb").write(p)
+        print(f"  media: {len(photos)} photo(s) watermarked, {len(media['videos'])} video(s), {len(media['docs'])} doc(s)")
+        return
+    caption_ok = len(msg) <= 1024
+    sent_text = False
+    try:
+        if len(photos) == 1 and caption_ok:
+            tg_api("sendPhoto", {**base, "caption": msg}, {"photo": ("p.jpg", photos[0])}); sent_text = True
+        elif photos:
+            if len(photos) > 1:
+                att = json.dumps([{"type": "photo", "media": f"attach://p{i}"} for i in range(len(photos))])
+                tg_api("sendMediaGroup", {"chat_id": DST, "media": att}, {f"p{i}": (f"p{i}.jpg", p) for i, p in enumerate(photos)})
+            else:
+                tg_api("sendPhoto", {"chat_id": DST}, {"photo": ("p.jpg", photos[0])})
+    except Exception as e:
+        print(f"photo send failed: {e}")
+    if not sent_text:
+        tg_api("sendMessage", {**base, "text": msg, "disable_web_page_preview": "true"})
+    for v in media["videos"][:1]:
+        try: tg_api("sendVideo", {"chat_id": DST, "video": v})
+        except Exception as e: print(f"video send failed: {e}")
+    for d in media["docs"][:2]:
+        try: tg_api("sendDocument", {"chat_id": DST, "document": d})
+        except Exception as e: print(f"document send failed: {e}")
+
+sent = 0
+def publish(text, src, english=False, media=None):
+    """Returns True when handled (sent, skipped or duplicate)."""
+    global sent
+    media = media or new_media()
+    out = rewrite(text, src, english)
+    head = out.split()[0].upper() if out.split() else ""
+    if head in ("SKIP", "DUP") and len(out) < 8:
+        print(f"[{src}] {head}: {text[:60]!r}"); return True
+    msg = to_html(out)
+    if len(msg) + len(FOOTER) > 4000: msg = msg[:4000 - len(FOOTER)].rsplit("\n", 1)[0]
+    msg += FOOTER
+    if DRY: print(f"[{src}] WOULD POST:\n{msg}\n")
+    send(msg, media)
+    if not DRY: time.sleep(8)
+    state["recent"].append(out.replace("\n", " ")[:160])
+    state["recent"] = state["recent"][-40:]
+    sent += 1
+    save_state()  # persist right after each post so a later crash can't cause duplicates
+    return True
+
+# --- Telegram channels (numeric last-id)
+for ch in TG_CHANNELS:
+    if sent >= MAX_PER_RUN: break
+    try:
+        posts = tg_items(ch)
+        if not posts:
+            print(f"{ch}: no readable posts"); continue
+        if ch not in state:
+            state[ch] = max(p[0] for p in posts); continue
+        for pid, text, media in sorted((p for p in posts if p[0] > state[ch]), key=lambda p: p[0]):
+            if sent >= MAX_PER_RUN: break
+            if text: publish(text, "@" + ch, media=media)
+            state[ch] = pid
+            save_state()
+    except Exception as e:
+        print(f"{ch}: error {e}")
+
+# --- RSS / WCO (seen-set)
+def run_source(name, items, text_of=None, english=False, first_run_post=0):
+    global sent
+    seen = state["seen"].setdefault(name, None)
+    if seen is None:
+        state["seen"][name] = [i[0] for i in items][first_run_post:]; print(f"{name}: baseline {len(items)}"); return
+    for key, text, media in items:
+        if sent >= MAX_PER_RUN: break
+        if key in seen: continue
+        if text_of: text, media = text_of(key)
+        if text: publish(text, name, english, media)
+        seen.append(key)
+    state["seen"][name] = seen[-300:]
+
+for name, url in RSS.items():
+    try: run_source(name, rss_items(url), english=True)
+    except Exception as e: print(f"{name}: error {e}")
+
+save_state()
+print("done, posted:", sent)
