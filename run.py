@@ -283,6 +283,13 @@ def publish(text, src, english=False, media=None, link=""):
     save_state()  # persist right after each post so a later crash can't cause duplicates
     return True
 
+if os.environ.get("BACKFILL"):  # one-off: the source's last 5 items, oldest first (already in seen, so the loop won't repeat them)
+    for name, url in RSS.items():
+        for key, text, media in reversed(rss_items(url)[:5]):
+            print("backfill", key)
+            publish(text, name, True, media, link=key)
+    raise SystemExit
+
 # --- Telegram channels (numeric last-id)
 for ch in TG_CHANNELS:
     if sent >= MAX_PER_RUN: break
