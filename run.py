@@ -185,7 +185,7 @@ def blog_draft(text, src, link, cover_jpg=None):
 def cover(out):
     from PIL import Image, ImageDraw, ImageFont
     line = next((l for l in out.splitlines() if l.strip()), "")
-    title = re.sub(r"[^\w\s،؛:؟!%\-.()«»]", "", line).strip()[:110]
+    title = re.sub("[^\\w\\s\u200c،؛:؟!%\\-.()«»]", "", line).strip()[:110]
     W, H = 1200, 630
     top, bottom = (8, 12, 14), (10, 70, 50)
     im = Image.new("RGB", (W, H))
