@@ -1,0 +1,21 @@
+name: probe
+on: workflow_dispatch
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -q libfribidi0 libraqm0 || true
+      - run: pip install pillow
+      - run: |
+          python3 - <<'PY'
+          import re,io,os
+          from PIL import features
+          print("RAQM",features.check("raqm"))
+          src=open("run.py",encoding="utf-8").read()
+          code=src[src.index("def cover(out):"):src.index("# --- images: watermark")]
+          __file__=os.path.abspath("run.py"); exec(code)
+          open("out.jpg","wb").write(cover("📢 **گوگل ادز** گزارش تازه‌ی Performance Max را برای تبلیغ‌کنندگان منتشر کرد؛ تغییرات مهم در کمپین‌ها"))
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: out, path: out.jpg}
