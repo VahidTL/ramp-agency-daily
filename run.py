@@ -7,6 +7,7 @@ KEYS = [k for k in (os.environ.get("GEMINI_API_KEY"), os.environ.get("GEMINI_API
 BASES = ["https://generativelanguage.googleapis.com/v1beta/models/" if k == os.environ.get("GEMINI_API_KEY") else "https://api.avalai.ir/v1beta/models/" for k in KEYS]
 DST = "@ramp_agency"
 MAX_PER_RUN = 6
+NEW_SOURCES = {"dynares", "medium-dmt"}   # on their first run the 3 newest items are posted instead of just baselined
 # free-tier quotas are per model, so fall through to the next one when a model's daily quota is gone
 MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
 dead_models = set()
@@ -14,7 +15,11 @@ dead_models = set()
 TG_CHANNELS = []
 RSS = {
     "sej-ppc": "https://www.searchenginejournal.com/category/paid-media/pay-per-click/feed/",
+    "dynares": "https://dynares.ai/resources/blog/rss.xml",
+    # Medium's tag page (and its "Popular this week" list) sits behind a Cloudflare check; the tag's RSS feed is the open route
+    "medium-dmt": "https://medium.com/feed/tag/digital-marketing-tips",
 }
+DMI = "https://digitalmarketinginstitute.com"   # no RSS: the blog listing is scraped
 
 FOOTER = """
 
@@ -107,6 +112,36 @@ def rss_items(url):
         for u in re.findall(r'href="([^"]+\.(?:pdf|docx?|xlsx?|zip|rar))"', raw, re.I)[:2]: add_media(media, u)
         out.append((link, text[:3500], media))
     return out
+
+def dmi_links():
+    h = fetch(DMI + "/blog")
+    links = []
+    for x in re.findall(r'href="(/blog/[a-z0-9\-]+)"', h):
+        if x not in ("/blog/blog", "/blog/category") and DMI + x not in links: links.append(DMI + x)
+    return links[:12]
+
+def dmi_article(url):
+    h = fetch(url)
+    g = lambda pat: clean(re.search(pat, h, re.S).group(1)) if re.search(pat, h, re.S) else ""
+    title = re.sub(r"\s*\|\s*Digital Marketing Institute\s*$", "", g(r"<title[^>]*>(.*?)</title>"))
+    body = ""
+    try:  # the page is client-rendered; the article blocks sit in __NEXT_DATA__ with [[tag]] markup
+        nd = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S).group(1))
+        blocks = []
+        def walk(o):
+            if isinstance(o, dict):
+                if isinstance(o.get("content"), str) and "[[" in o["content"]: blocks.append(o["content"])
+                for v in o.values(): walk(v)
+            elif isinstance(o, list):
+                for v in o: walk(v)
+        walk(nd["props"]["pageProps"].get("articleJsonData") or {})
+        body = " ".join(clean(re.sub(r"\[\[/?[^\]]*\]\]", " ", x)) for x in blocks)
+    except Exception: pass
+    date = (re.search(r'"datePublished":"([^"]+)"', h) or [None, ""])[1]
+    media = new_media()
+    img = (re.search(r'og:image" content="([^"]+)', h) or [None, ""])[1]
+    if img and "open_graph" not in img: add_media(media, img)
+    return date, (title + "\n\n" + (g(r'og:description" content="([^"]*)') + "\n\n" + body)[:3300]), media
 
 _last_gemini = [0.0]
 PAID_MODELS = ["gemini-3.1-flash-lite"]           # the only text model used on the paid AvalAI key
@@ -450,8 +485,18 @@ def run_source(name, items, text_of=None, english=False, first_run_post=0):
     state["seen"][name] = seen[-300:]
 
 for name, url in RSS.items():
-    try: run_source(name, rss_items(url), english=True)
+    try: run_source(name, rss_items(url), english=True, first_run_post=3 if name in NEW_SOURCES else 0)
     except Exception as e: print(f"{name}: error {e}")
+
+try:  # Digital Marketing Institute: newest-by-date first on the first run, then any link not seen yet
+    links = dmi_links()
+    if state["seen"].get("dmi") is None:
+        links = [u for _, u in sorted(((dmi_article(u)[0], u) for u in links), reverse=True)]
+    cache = {}
+    def dmi_text(u):
+        cache[u] = dmi_article(u); return cache[u][1], cache[u][2]
+    run_source("dmi", [(u, "", None) for u in links], text_of=dmi_text, english=True, first_run_post=3)
+except Exception as e: print(f"dmi: error {e}")
 
 save_state()
 print("done, posted:", sent)
