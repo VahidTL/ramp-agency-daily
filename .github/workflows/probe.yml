@@ -19,9 +19,9 @@ jobs:
           src=open("run.py",encoding="utf-8").read()
           g={"__file__":__import__("os").path.abspath("run.py"),"__name__":"probe"}
           exec(src[:src.index("# --- Telegram channels")].replace('if os.environ.get("BACKFILL")','if False'), g)
-          name,url=next(iter(g["RSS"].items()))
-          key,text,_=g["rss_items"](url)[0]
-          print("ITEM",key)
-          g["blog_draft"](text,name,key,g["cover"](text))
+          t="استراتژی فول فانل بلک فرایدی برای فروشگاه اینترنتی + نقشه راه افزایش فروش"
+          key="https://www.searchenginejournal.com/how-to-run-a-full-funnel-ecommerce-account-through-bfcm-week/594047/"
+          text=next(x for k,x,_ in g["rss_items"](g["RSS"]["sej-ppc"]) if k==key)
+          g["blog_draft"](text,"sej-ppc",key,g["cover"](t))
           print("DONE")
           PY2
