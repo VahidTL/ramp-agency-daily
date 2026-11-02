@@ -12,6 +12,12 @@ jobs:
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
         run: |
           python3 - <<'PY'
+          import json,os,urllib.request,urllib.error
+          k=os.environ.get("GEMINI_API_KEY_2","")
+          print("KEY2 len",len(k),"starts",k[:3])
+          for body,m in (({"contents":[{"parts":[{"text":"hi"}]}]},"gemini-2.5-flash"),({"contents":[{"parts":[{"text":"a cargo ship"}]}],"generationConfig":{"responseModalities":["IMAGE"]}},"gemini-2.5-flash-image")):
+              try: urllib.request.urlopen(urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",json.dumps(body).encode(),{"x-goog-api-key":k,"content-type":"application/json"}),timeout=90); print("PROBE",m,"OK")
+              except urllib.error.HTTPError as e: print("PROBE",m,e.code,e.read()[:300])
           src=open("run.py",encoding="utf-8").read()
           g={"__file__":__import__("os").path.abspath("run.py"),"__name__":"probe"}
           exec(src[:src.index("# --- Telegram channels")], g)
