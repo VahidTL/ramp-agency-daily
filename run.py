@@ -151,14 +151,18 @@ def ask(prompt, as_json=False, search=False, max_tokens=None):
 # strongest image model first; each is tried on every key before falling back to a weaker one
 IMAGE_MODELS = ["gemini-3-pro-image", "gemini-3-pro-image-preview", "gemini-3.1-flash-image",
                 "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image", "gemini-3.1-flash-lite-image"]
-CF_SCENE = "Photorealistic editorial photograph, wide shot, shallow depth of field, soft natural light. A person seen from behind working at a laptop in a bright modern office, shopping bags and cardboard parcels on the desk, city skyline through the window. Clean minimal scene with plain surfaces only, nothing with writing on it."
+BASE_SCENE = "Photorealistic editorial photograph, wide 16:9, shallow depth of field, natural light. "
+SCENES = ['A person seen from behind working at a laptop in a bright modern office, shopping bags and cardboard parcels on the desk, city skyline through the window.', 'Close-up of hands holding a smartphone with a plain blank glowing screen, shopping bags and a coffee cup on a wooden table, soft bokeh background.', 'A small team seen from behind around a meeting table in a sunlit modern office, laptops closed, plain whiteboard wall, plants and warm light.', 'Cardboard delivery boxes and parcels stacked on a clean white shelf in a tidy online-store warehouse, soft daylight, shallow depth of field.', 'A magnifying glass and a compass resting on a clean desk beside a closed notebook and a laptop seen from behind, warm morning light, minimal composition.', 'Evening city street with softly blurred shop lights and bokeh, a shopper walking away from the camera carrying shopping bags.']
+
+def scene_for(title):
+    return BASE_SCENE + SCENES[sum(map(ord, title)) % len(SCENES)] + " Clean scene with plain surfaces only, nothing with writing on it."
 CF_TOKEN, CF_ACCOUNT = os.environ.get("CF_API_TOKEN"), os.environ.get("CF_ACCOUNT_ID")
 
 def gen_image_cf(prompt):
     """Cloudflare Workers AI, FLUX.1 schnell: free daily allowance, so it goes before any paid model."""
     if not (CF_TOKEN and CF_ACCOUNT): return None
     try:
-        body = json.dumps({"prompt": CF_SCENE, "steps": 6}).encode()
+        body = json.dumps({"prompt": prompt, "steps": 6}).encode()
         r = json.loads(fetch(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/@cf/black-forest-labs/flux-1-schnell",
                              body, {"Authorization": f"Bearer {CF_TOKEN}", "content-type": "application/json"}, timeout=120))
         print("image by cloudflare flux-1-schnell")
@@ -268,7 +272,7 @@ def cover(out):
     bg, bg2, fg, accent, sub = (254, 246, 236), (253, 226, 196), (31, 29, 44), (255, 122, 0), (31, 29, 44)
     here = os.path.dirname(os.path.abspath(__file__))
     fpath = os.path.join(here, "Vazir-Bold.ttf")
-    photo = gen_image(IMAGE_PROMPT.format(title=title))
+    photo = gen_image(scene_for(title))
     if photo:
         im = ImageOps.fit(Image.open(io.BytesIO(photo)).convert("RGB"), (W, H), Image.LANCZOS)
         band_h = 230
