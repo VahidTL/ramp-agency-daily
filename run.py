@@ -170,8 +170,8 @@ def gen_image_cf(prompt):
     except Exception as e:
         print(f"cloudflare image failed: {e}"); return None
 
-def gen_image(prompt):
-    img = gen_image_cf(prompt)
+def gen_image(prompt, cf_prompt=None):
+    img = gen_image_cf(cf_prompt or prompt)
     if img: return img
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}],
                        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}}).encode()
@@ -272,7 +272,7 @@ def cover(out):
     bg, bg2, fg, accent, sub = (254, 246, 236), (253, 226, 196), (31, 29, 44), (255, 122, 0), (31, 29, 44)
     here = os.path.dirname(os.path.abspath(__file__))
     fpath = os.path.join(here, "Vazir-Bold.ttf")
-    photo = gen_image(scene_for(title))
+    photo = gen_image(IMAGE_PROMPT.format(title=title), scene_for(title))
     if photo:
         im = ImageOps.fit(Image.open(io.BytesIO(photo)).convert("RGB"), (W, H), Image.LANCZOS)
         band_h = 230
