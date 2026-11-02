@@ -207,6 +207,22 @@ SCENES = ['A person seen from behind working at a laptop in a bright modern offi
 
 def scene_for(title):
     return BASE_SCENE + SCENES[sum(map(ord, title)) % len(SCENES)] + " Clean scene with plain surfaces only, nothing with writing on it."
+def scene_ai(title):
+    """English, story-specific scene prompt for FLUX (it cannot read Persian). Falls back to the fixed scenes."""
+    try:
+        t = ask(f"""Persian news headline: «{title}»
+Step 1: translate the headline into English. Step 2: write ONE image-generation prompt (max 60 words, English) for a photorealistic editorial photo that visually shows the concrete subject of this story (digital marketing, Google Ads, SEO, e-commerce).
+Rules: describe real objects, people seen from behind or from a distance, places and lighting; wide 16:9, shallow depth of field, natural light. No text, letters, numbers, logos, flags, charts with labels or readable screens anywhere: screens are blank or blurred, surfaces plain.
+Output exactly two lines: 'EN: <translated headline>' then 'PROMPT: <the prompt>'.""" , max_tokens=1500)
+        m = re.search(r"PROMPT:\s*(.+)", t, re.S)
+        en = re.search(r"EN:\s*(.+)", t)
+        if m:
+            pr = m.group(1).strip().splitlines()[0][:600]
+            print("scene prompt:", (en.group(1).strip() if en else ""), "|", pr)
+            return BASE_SCENE + pr + " No text or writing anywhere in the image."
+    except Exception as e:
+        print(f"scene prompt failed: {e}")
+    return scene_for(title)
 CF_TOKEN, CF_ACCOUNT = os.environ.get("CF_API_TOKEN"), os.environ.get("CF_ACCOUNT_ID")
 
 def gen_image_cf(prompt):
@@ -343,7 +359,7 @@ def cover(out):
     bg, bg2, fg, accent, sub = (254, 246, 236), (253, 226, 196), (31, 29, 44), (255, 122, 0), (31, 29, 44)
     here = os.path.dirname(os.path.abspath(__file__))
     fpath = os.path.join(here, "Vazir-Bold.ttf")
-    photo = gen_image(IMAGE_PROMPT.format(title=title), scene_for(title))
+    photo = gen_image(IMAGE_PROMPT.format(title=title), scene_ai(title))
     if photo:
         im = ImageOps.fit(Image.open(io.BytesIO(photo)).convert("RGB"), (W, H), Image.LANCZOS)
         band_h = 230
