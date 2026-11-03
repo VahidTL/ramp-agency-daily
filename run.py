@@ -272,6 +272,14 @@ def rewrite(text, src, english=False):
                            translate="متن انگلیسی است؛ آن را به فارسی روان و طبیعی ترجمه و بازنویسی کن (نه ترجمه‌ی تحت‌اللفظی)." if english else "")
     return ask(prompt)
 
+TEHRAN = datetime.timezone(datetime.timedelta(hours=3, minutes=30))
+def stat(src, key):
+    day = datetime.datetime.now(TEHRAN).strftime("%Y-%m-%d")
+    st = state.setdefault("stats", {})
+    d = st.setdefault(day, {}).setdefault(src, {})
+    d[key] = d.get(key, 0) + 1
+    for old in sorted(st)[:-7]: del st[old]
+
 def save_state():
     if not DRY:
         json.dump(state, open("state.json", "w"), ensure_ascii=False)
@@ -485,7 +493,7 @@ def publish(text, src, english=False, media=None, link=""):
     out = rewrite(text, src, english)
     head = out.split()[0].upper() if out.split() else ""
     if head in ("SKIP", "DUP") and len(out) < 8:
-        print(f"[{src}] {head}: {text[:60]!r}"); return True
+        print(f"[{src}] {head}: {text[:60]!r}"); stat(src, "skipped"); return True
     try: media["cover"] = cover(out)
     except Exception as e: print(f"cover failed: {e}")
     body = to_html(out)
@@ -495,9 +503,10 @@ def publish(text, src, english=False, media=None, link=""):
     msg = body + FOOTER
     if DRY: print(f"[{src}] WOULD POST:\n{msg}\n")
     ref = send(msg, media)
-    if not DRY: time.sleep(8)
+    if not DRY: time.sleep(8); stat(src, "posted")
     if not DRY and link:
         r = blog_draft(text, src, link, media.get("cover"))
+        stat(src, "blog_ok" if r else "blog_fail")
         if r and r.get("url") and ref:
             try:
                 more = f'\n\n📖 <a href="{html.escape(r["url"])}">مطالعه کامل در بلاگ سایت</a>'
@@ -563,5 +572,26 @@ try:  # Digital Marketing Institute: newest-by-date first on the first run, then
     run_source("dmi", [(u, "", None) for u in links], text_of=dmi_text, english=True, first_run_post=3)
 except Exception as e: print(f"dmi: error {e}")
 
+def daily_report():
+    now = datetime.datetime.now(TEHRAN); day = now.strftime("%Y-%m-%d")
+    if now.hour < 23 or state.get("report_date") == day or not OWNER_CHAT or DRY: return
+    def block(title, stats):
+        if not stats: return f"{title}\nامروز فعالیتی ثبت نشد."
+        tot = {k: sum(v.get(k, 0) for v in stats.values()) for k in ("posted", "blog_ok", "blog_fail", "skipped")}
+        lines = [title, f"پست تلگرام: {tot['posted']} | بلاگ ساخته شد: {tot['blog_ok']} | بلاگ ناموفق: {tot['blog_fail']} | ردشده: {tot['skipped']}", ""]
+        for src, v in sorted(stats.items()):
+            lines.append(f"• {src}: پست {v.get('posted', 0)}، بلاگ {v.get('blog_ok', 0)}، بلاگ ناموفق {v.get('blog_fail', 0)}، ردشده {v.get('skipped', 0)}")
+        return "\n".join(lines)
+    try:
+        esk = json.loads(fetch("https://raw.githubusercontent.com/VahidTL/eskele-tarkhis-daily/main/state.json", timeout=30)).get("stats", {}).get(day, {})
+        esk_txt = block("🚢 اسکله", esk)
+    except Exception as e:
+        esk_txt = f"🚢 اسکله\nخواندن گزارش ممکن نشد: {e}"
+    msg = f"📊 گزارش امروز ({day})\n(ردشده = نامرتبط، تکراری یا قدیمی)\n\n" + block("🚀 رمپ", state.get("stats", {}).get(day, {})) + "\n\n" + esk_txt
+    tg_api("sendMessage", {"chat_id": OWNER_CHAT, "text": msg[:4000]})
+    state["report_date"] = day
+
+try: daily_report()
+except Exception as e: print(f"report failed: {e}")
 save_state()
 print("done, posted:", sent)
