@@ -413,24 +413,89 @@ Reply with the slug only.""", max_tokens=400)
         print(f"english slug failed: {e}")
     return fallback
 
+RAMP_PROMPT = """تو نویسنده بلاگ آژانس دیجیتال مارکتینگ «رمپ» (rampagency.org) هستی. خواننده: صاحب کسب‌وکار یا مدیر بازاریابی در ایران. خروجی فقط یک شیء JSON معتبر است.
+
+قواعد انتخاب خبر:
+- فقط این موضوع‌ها: تبلیغات گوگل، متا (اینستاگرام/فیسبوک)، تیک‌تاک، لینکدین، تلگرام، سئو و جست‌وجوی هوش مصنوعی، وب آنالیتیکس (GA4، GTM)، طراحی سایت و نرخ تبدیل، و بازاریابی برای کلینیک زیبایی، دندانپزشکی، پزشکان، وکلا، صنعتی، فروشگاه اینترنتی، املاک، آموزش و صادرات.
+- خبرهای حقوقی، شرکتی یا بازار آمریکا که برای کسب‌وکار ایرانی قابل استفاده نیست را رد کن (مثل دعوای FTC، هشتگ پینترست، بوکستاگرام).
+- اگر در ۹۰ روز گذشته مطلبی با همین موضوع منتشر شده (فهرست پایین)، مطلب تازه ننویس.
+در این سه حالت فقط این را برگردان: {{"skip": true, "reason": "دلیل کوتاه"}}
+
+قواعد نوشتن:
+- متن منبع را ترجمه یا بازنویسی بند به بند نکن. فقط واقعیت‌ها را بگیر و با ساختار خودت بنویس. از منبع حداکثر یک نقل‌قول کوتاه (زیر ۲۵ کلمه) در گیومه، با لینک.
+- حداقل ۱۰۰۰ کلمه با این ساختار:
+  ۱. خلاصه ۲ تا ۳ جمله‌ای در ابتدا (چه تغییر کرد و برای چه کسی مهم است)
+  ۲. توضیح تغییر با جزئیات
+  ۳. بخشی با عنوان دقیق «## نظر رمپ: این تغییر برای کسب‌وکار ایرانی چه معنایی دارد» شامل: آیا در ایران قابل استفاده است (تحریم، پرداخت ارزی، در دسترس بودن)، چه کسب‌وکاری باید کاری کند، و ۳ تا ۵ قدم عملی
+  ۴. اشتباه رایج یا نکته‌ای که منبع نگفته
+  ۵. پرسش‌های متداول (۳ پرسش کوتاه؛ عنوان بخش H2 و هر پرسش H3)
+  ۶. «## منابع» با لینک همه منبع‌ها
+- عدد، آمار، نام مشتری یا تجربه‌ای از رمپ نساز. اگر داده رمپ نداری، جای آن بنویس [تجربه تیم: توسط ویراستار تکمیل شود].
+- دست‌کم یک لینک داخلی به صفحه خدمت یا راهکار مرتبط داخل متن، به شکل [متن لینک](/services/seo)، فقط از این فهرست:
+  /services/google-ads /services/meta-ads /services/tiktok-ads /services/linkedin-ads /services/telegram-ads /services/seo /services/web-design /services/social-media /services/web-analytics /services/pay-per-lead
+  /solutions/beauty-clinics /solutions/dental /solutions/doctors /solutions/industrial /solutions/lawyers /solutions/international /solutions/ecommerce /solutions/real-estate /solutions/education
+- فارسی روان، بدون علامت همزه بالای «ه» (بنویس «درباره ما»، نه «دربارهٔ ما»).
+
+خروجی (JSON):
+{{"title": "عنوان سئو ۵۰ تا ۶۰ نویسه، کلیدواژه در ابتدا، بدون نام برند", "excerpt": "خلاصه یک‌جمله‌ای", "seo_description": "۱۲۰ تا ۱۵۵ نویسه", "slug": "انگلیسی، کوتاه، با خط تیره، بدون فینگلیش مثل google-ads-ai-max", "category": "نام دسته‌ی بلاگ مناسب (مثل گوگل ادز، سئو، متا ادز، تحلیل و آنالیتیکس)", "cover_alt": "توصیف یک‌جمله‌ای از صحنه‌ی تصویر شاخص به فارسی، حداکثر ۱۱۰ حرف", "paragraphs": ["پاراگراف", "## تیتر H2", "### تیتر H3", "..."], "sources": [{{"name": "نام منبع", "url": "https://..."}}]}}
+هر عنصر paragraphs یک پاراگراف یا تیتر («## » H2، «### » H3) است؛ حداکثر ۶۰ عنصر و هر عنصر حداکثر ۲۸۰۰ نویسه. HTML ننویس.
+
+مطالب ۹۰ روز اخیر:
+{titles}
+
+خبر اصلی (منبع: {src}، لینک: {link}):
+{text}"""
+
+INTERNAL_OK = re.compile(r"\]\(/(?:services/(?:google-ads|meta-ads|tiktok-ads|linkedin-ads|telegram-ads|seo|web-design|social-media|web-analytics|pay-per-lead)|solutions/(?:beauty-clinics|dental|doctors|industrial|lawyers|international|ecommerce|real-estate|education))\)")
+
+def check_article(art):
+    """The editor rules: returns the reason when the draft must not be made, else ''."""
+    paras = [p for p in art.get("paragraphs", []) if isinstance(p, str)]
+    words = len(re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", " ".join(paras)).split())
+    if words < 1000: return f"کمتر از ۱۰۰۰ کلمه ({words})"
+    if not any(re.match(r"^##\s*نظر رمپ", p.strip()) for p in paras): return "بخش «نظر رمپ» نبود"
+    if not INTERNAL_OK.search(" ".join(paras)): return "لینک داخلی معتبر نبود"
+    return ""
+
 def blog_draft(text, src, link, cover_jpg=None):
     if not (BLOG_URL and BLOG_TOKEN): return
     year_rule = "\n\nقانون سال: منبع انگلیسی است؛ هر سالی که می‌آوری میلادی باشد (مثل ۲۰۲۶)، نه شمسی." if external_en(src) else ""
     try:
-        brief_req = BRIEF_SKILL + "\n\n---\nبرای خبر زیر یک بریف مقاله‌ی بلاگ (Article / Blog Brief) به زبان فارسی بساز. کلمه‌ی کلیدی اصلی را خودت از خبر استخراج کن.\n\n" + text[:3000] + date_rule() + year_rule
-        try: brief = ask(brief_req, search=True, max_tokens=8000)
-        except Exception as e:
-            print(f"brief with search failed ({e}), retrying without search"); brief = ask(brief_req, max_tokens=8000)
-        for attempt in (1, 2):  # thinking tokens share the output cap, so a cut-off JSON is possible: retry once
-            raw = ask(ARTICLE_PROMPT.format(src=src, text=text[:3000], brief=brief[:8000]) + date_rule() + year_rule, as_json=True, max_tokens=20000)
+        day = datetime.datetime.now(TEHRAN).strftime("%Y-%m-%d")
+        bd = state.setdefault("blogday", {})
+        if bd.get(day, 0) >= 2:
+            logwhy(src, "blog_fail", "سقف ۲ مطلب در روز", link or re.sub(r"\s+", " ", text)[:70]); return None
+        cutoff = (datetime.datetime.now(TEHRAN) - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
+        titles = "\n".join(f"- {t['t']}" for t in state.get("blog_titles", []) if t["d"] >= cutoff) or "(موردی نیست)"
+        base = RAMP_PROMPT.format(titles=titles, src=src, link=link, text=text[:3500]) + date_rule() + year_rule
+        fb = ""
+        for attempt in (1, 2, 3):
+            raw = ask(base + fb, as_json=True, max_tokens=24000)
             raw = re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip()
-            try: art = json.loads(raw); break
+            try: art = json.loads(raw)
             except ValueError:
-                if attempt == 2: raise
-                print("article JSON cut off, retrying")
+                if attempt == 3: raise
+                print("article JSON cut off, retrying"); continue
+            if art.get("skip"):
+                logwhy(src, "blog_fail", "دبیر: " + str(art.get("reason", "خارج از موضوع"))[:70], link or re.sub(r"\s+", " ", text)[:70]); return None
+            why = check_article(art)
+            if not why: break
+            print(f"article rejected: {why}")
+            if attempt == 3:
+                logwhy(src, "blog_fail", "قواعد رعایت نشد: " + why, link or re.sub(r"\s+", " ", text)[:70]); return None
+            fb = f"\n\nمتن قبلی رد شد: {why}. دوباره و کامل مطابق همه‌ی قواعد بنویس."
+        srcs = [x for x in art.get("sources", []) if isinstance(x, dict) and str(x.get("url", "")).startswith("https://")]
+        if link.startswith("https://") and link not in [x["url"] for x in srcs]: srcs.append({"name": SOURCE_NAMES.get(src, src), "url": link})
+        if srcs:
+            art["paragraphs"] = [p for p in art["paragraphs"] if not re.match(r"^##\s*منابع", str(p).strip())]
+            art["paragraphs"].append("## منابع")
+            art["paragraphs"] += [f"[{str(x.get('name') or x['url']).replace(']', '')[:80]}]({x['url']})" for x in srcs[:8]]
         def tidy(p):  # drop leftover brief notes: "[CTA: x]" keeps x, any other [..] note is removed; no backticks
             p = re.sub(r"\[\s*(?:CTA|Call to action)\s*[:：]\s*([^\]]*)\]", r"\1", p, flags=re.I)
-            p = re.sub(r"\[[^\]]*\]", "", p).replace("`", "")
+            keep = []
+            p = re.sub(r"\[(?:تجربه تیم[^\]]*)\]", lambda m: keep.append(m.group(0)) or f"\x00{len(keep)-1}\x00", p)
+            p = re.sub(r"\[([^\]]*)\](?!\()", "", p).replace("`", "")
+            p = re.sub(r"\x00(\d+)\x00", lambda m: keep[int(m.group(1))], p)
             return re.sub(r"\s{2,}", " ", p).strip()
         art["paragraphs"] = [strip_old_years(tidy(p)) for p in art["paragraphs"] if isinstance(p, str)]
         art["slug"] = re.sub(r"[^a-z0-9]+", "-", str(art.get("slug", "")).lower()).strip("-")[:90]
@@ -439,7 +504,8 @@ def blog_draft(text, src, link, cover_jpg=None):
         if not H3_SUPPORTED: art["paragraphs"] = [p.replace("### ", "## ", 1) for p in art["paragraphs"]]  # the site only knows H2 until its update with H3 support is installed
         art["title"] = strip_old_years(art["title"], True)[:180]
         art["cover_alt"] = strip_old_years(str(art.get("cover_alt") or "")).strip()[:240] or art["title"]
-        art["source_url"] = link if link.startswith("https://") else None
+        art["source_url"] = None  # the sources are listed (linked) in the «منابع» section
+        art["category"] = str(art.get("category") or "")[:120]
         if not cover_jpg:  # no channel cover (e.g. a redo): build one from the Persian title
             try: cover_jpg = cover(art["title"])
             except Exception as e: print(f"cover for draft failed: {e}")
@@ -448,6 +514,9 @@ def blog_draft(text, src, link, cover_jpg=None):
             print("  blog draft:", art["title"]); return
         r = json.loads(call(BLOG_URL, json.dumps(art, ensure_ascii=False).encode(),
                             {"Content-Type": "application/json", "X-Ingest-Token": BLOG_TOKEN}))
+        bd[day] = bd.get(day, 0) + 1
+        for old in sorted(bd)[:-7]: del bd[old]
+        state.setdefault("blog_titles", []).append({"d": day, "t": art["title"]}); state["blog_titles"] = state["blog_titles"][-60:]
         if OWNER_CHAT:
             tg_api("sendMessage", {"chat_id": OWNER_CHAT, "disable_web_page_preview": "true",
                    "text": f"📝 پیش‌نویس بلاگ آماده‌ی بررسی است:\n{art['title']}\n\n🔗 منبع: {src}" + (f"\n{link}" if link else "") + f"\n\nویرایش:\n{r['edit_url']}",
