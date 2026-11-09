@@ -592,6 +592,14 @@ def send(msg, media):
         except Exception as e: print(f"document send failed: {e}")
     return ref
 
+SOURCE_NAMES = {"sej-ppc": "Search Engine Journal", "dynares": "Dynares", "medium-dmt": "Medium", "dmi": "Digital Marketing Institute"}
+
+def source_line(src, link):
+    """'🔗 منبع: <name>' as a followed link to the original article (external sources only)."""
+    if not (link and link.startswith("https://")) or src.startswith("@"): return "", 0
+    name = SOURCE_NAMES.get(src, src)
+    return f'\n\n🔗 منبع: <a href="{html.escape(link)}">{html.escape(name)}</a>', len(f"\n\n🔗 منبع: {name}")
+
 READ_MORE_PLAIN = "\n\n📖 مطالعه کامل در بلاگ سایت"
 sent = 0
 def publish(text, src, english=False, media=None, link=""):
@@ -612,9 +620,11 @@ def publish(text, src, english=False, media=None, link=""):
     except Exception as e: print(f"cover failed: {e}")
     out = strip_old_years(out)
     body = to_html(out)
-    room = (1000 if media.get("cover") else 4000) - len(re.sub("<[^>]+>", "", html.unescape(FOOTER))) - len(READ_MORE_PLAIN)
+    src_html, src_len = source_line(src, link)
+    room = (1000 if media.get("cover") else 4000) - len(re.sub("<[^>]+>", "", html.unescape(FOOTER))) - len(READ_MORE_PLAIN) - src_len
     while len(re.sub("<[^>]+>", "", html.unescape(body))) > room and "\n" in body: body = body.rsplit("\n", 1)[0].rstrip()  # drop trailing lines until it fits
     if len(re.sub("<[^>]+>", "", html.unescape(body))) > room: body = body[:room - 1].rstrip() + "…"
+    body += src_html
     msg = body + FOOTER
     if DRY: print(f"[{src}] WOULD POST:\n{msg}\n")
     ref = send(msg, media)
